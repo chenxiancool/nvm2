@@ -4,6 +4,8 @@
 #include <linux/types.h> //contains dev_t type
 #include <linux/cdev.h>
 #include <linux/slab.h>
+#include <linux/module.h>
+#include <linux/device.h>
 
 #define NVMD_MAJOR 255
 
@@ -12,7 +14,9 @@ struct nvmd{
 	long count;
 };
 
-struct nvmd *nvmdp;
+static struct nvmd *nvmdp;
+static struct class *module_class;
+static struct device *module_class_dev;
 
 MODULE_AUTHOR("STARKING");
 MODULE_LICENSE("GPL");
@@ -53,7 +57,7 @@ int nvmd_init(void)
 		return result;
 	}
 	
-	//now the major number has been occupied by nvmd in /proc/devices.
+	//now the NVMD_MAJOR has been occupied by nvmd in /proc/devices.
 	//alloc memory for nvmd struct.
 	nvmdp = kmalloc(sizeof(struct nvmd), GFP_KERNEL);
 	if(!nvmdp)
@@ -65,6 +69,17 @@ int nvmd_init(void)
 	memset(nvmdp, 0, sizeof(struct nvmd));
 	nvmd_setup_cdev(nvmdp, 0);
 
+	module_class = class_create(THIS_MODULE, "module_drv");
+	if(IS_ERR(module_class))
+	{
+		return PTR_ERR(module_class);
+	}
+	//note, class_device_create() is used before kernel version 2.6.29. But in newer version, device_create() is used instead.  		
+	module_class_dev = device_create(module_class, NULL, nvmdno,NULL, "nvmd");	
+	if(IS_ERR(module_class_dev))
+	{
+		return PTR_ERR(module_class_dev);
+	}
 	return 0;
 	
 	fail_malloc:
@@ -77,6 +92,8 @@ void nvmd_exit(void)
 	cdev_del(&nvmdp->cdev);
 	kfree(nvmdp);
 	unregister_chrdev_region(MKDEV(NVMD_MAJOR,0),1);
+	device_unregister(module_class_dev);
+	class_destroy(module_class);
 	printk("nvmd exit!\n");
 }
 
