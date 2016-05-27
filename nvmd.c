@@ -6,30 +6,56 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/mm.h>
+
 
 #define NVMD_MAJOR 255
+
+MODULE_AUTHOR("STARKING");
+MODULE_LICENSE("GPL");
 
 struct nvmd{
 	struct cdev cdev;
 	long count;
 };
 
+static long phy_start;
 static struct nvmd *nvmdp;
 static struct class *module_class;
 static struct device *module_class_dev;
 
-MODULE_AUTHOR("STARKING");
-MODULE_LICENSE("GPL");
+static int nvmd_open(struct inode *inode, struct file *file)
+{
+	phy_start = (_AC(1, UL))<<33;
+	printk("[DEBUG] nvmd is opened! PHY_START:%lu!\n", phy_start);
+	return 0;
+}
+
+static int nvmd_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	printk("[DEBUG] nvmd_mmap() is called !\n");
+	vma->vm_flags |= VM_IO;
+//	vma->vm_flags |= VM_RESERVED; //kernel 3.10 does not use this flag
+	if(remap_pfn_range(vma, vma->vm_start, phy_start >> PAGE_SHIFT, vma->vm_end-vma->vm_start, vma->vm_page_prot))
+	{
+		printk("[ERROR] nvmd mmap error  !\n");
+		return -EAGAIN;
+	}
+	printk("[DEBUG] nvmd mmap successed! PHY_START:%lu, VIRT_START:%p, SIZE: %lu !\n",phy_start >> PAGE_SHIFT, vma->vm_start, vma->vm_end-vma->vm_start);
+	return 0;
+}
+
 //the latest kernel does not use ioctl, instead unlocked_ioctl() is used.
 static struct file_operations nvmd_fops = {
 	.owner = THIS_MODULE,
-	.open = NULL,
+	.open = nvmd_open,
 	.read = NULL,
 	.write = NULL,
 	.release = NULL,
 	.llseek = NULL,
-	.mmap = NULL,
+	.mmap = nvmd_mmap,
 };
+
 void nvmd_setup_cdev(struct nvmd *dev, int minorIndex)
 {
 	int err;
