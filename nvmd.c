@@ -1,32 +1,17 @@
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/fs.h>
-#include <linux/types.h> //contains dev_t type
-#include <linux/cdev.h>
-#include <linux/slab.h>
-#include <linux/module.h>
-#include <linux/device.h>
-#include <linux/mm.h>
-
-
-#define NVMD_MAJOR 255
+#include "nvmd.h"
 
 MODULE_AUTHOR("STARKING");
 MODULE_LICENSE("GPL");
-
-struct nvmd{
-	struct cdev cdev;
-	long count;
-};
 
 static long phy_start;
 static struct nvmd *nvmdp;
 static struct class *module_class;
 static struct device *module_class_dev;
+static struct device *module_class_dev1;
+static void *metadata;
 
 static int nvmd_open(struct inode *inode, struct file *file)
 {
-	phy_start = (_AC(1, UL))<<33;
 	printk("[DEBUG] nvmd is opened! PHY_START:%lu!\n", phy_start);
 	return 0;
 }
@@ -35,8 +20,10 @@ static int nvmd_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	printk("[DEBUG] nvmd_mmap() is called !\n");
 	vma->vm_flags |= VM_IO;
-//	vma->vm_flags |= VM_RESERVED; //kernel 3.10 does not use this flag
-	if(remap_pfn_range(vma, vma->vm_start, phy_start >> PAGE_SHIFT, vma->vm_end-vma->vm_start, vma->vm_page_prot))
+	//vma->vm_flags |= VM_RESERVED; //kernel 3.10 does not use this flag
+
+	//for 8GB PM device, the first 2MB is used to store metadata
+	if(remap_pfn_range(vma, vma->vm_start, (phy_start >> PAGE_SHIFT) + 512, vma->vm_end-vma->vm_start, vma->vm_page_prot))
 	{
 		printk("[ERROR] nvmd mmap error  !\n");
 		return -EAGAIN;
@@ -74,7 +61,21 @@ int nvmd_init(void)
 {
 	int result = 0;
 	dev_t nvmdno;
+	phy_start = (_AC(1, UL))<<33;
 	printk("nvmd initialization!\n");
+	
+	//the head 2MB is used to store metadata
+	printk("ioremap: phy_start:%lu, size:%lu \n", phy_start,  (_AC(1, UL))<<21);
+	if((metadata = ioremap_prot(phy_start, (_AC(1, UL))<<21, _PAGE_CACHE_WB)))
+	{
+		printk("[DEBUG] metadata has been mapped at %p!\n", metadata);
+	}else{
+		printk("[DEBUG] failed to map metadata area !\n");
+		return 1;
+		
+	}
+	
+	//register the device
 	nvmdno = MKDEV(NVMD_MAJOR,0);
 	result = register_chrdev_region(nvmdno,1,"nvmd");
 	if(result < 0)
@@ -84,7 +85,6 @@ int nvmd_init(void)
 	}
 	
 	//now the NVMD_MAJOR has been occupied by nvmd in /proc/devices.
-	//alloc memory for nvmd struct.
 	nvmdp = kmalloc(sizeof(struct nvmd), GFP_KERNEL);
 	if(!nvmdp)
 	{
@@ -95,7 +95,8 @@ int nvmd_init(void)
 	memset(nvmdp, 0, sizeof(struct nvmd));
 	nvmd_setup_cdev(nvmdp, 0);
 
-	module_class = class_create(THIS_MODULE, "module_drv");
+	//create files in user space, e.g. /dev/nvmd /sys/class/nvmd_driver/
+	module_class = class_create(THIS_MODULE, "nvmd_driver");
 	if(IS_ERR(module_class))
 	{
 		return PTR_ERR(module_class);
@@ -106,6 +107,15 @@ int nvmd_init(void)
 	{
 		return PTR_ERR(module_class_dev);
 	}
+	
+	//create the child device, now this device is not used. 
+	module_class_dev1 = device_create(module_class, NULL, MKDEV(NVMD_MAJOR, 1),NULL, "nvmd1");	
+	if(IS_ERR(module_class_dev1))
+	{
+		return PTR_ERR(module_class_dev1);
+	}
+
+
 	return 0;
 	
 	fail_malloc:
@@ -119,6 +129,7 @@ void nvmd_exit(void)
 	kfree(nvmdp);
 	unregister_chrdev_region(MKDEV(NVMD_MAJOR,0),1);
 	device_unregister(module_class_dev);
+	device_unregister(module_class_dev1);
 	class_destroy(module_class);
 	printk("nvmd exit!\n");
 }
